@@ -23,6 +23,10 @@ python main.py
 # Or specify a different port
 python main.py --port 9000
 
+# With custom log level and optional log file
+python main.py --port 8080 --log-level DEBUG
+python main.py --port 8080 --log-level INFO --log-file /var/log/lb.log
+
 # Run tests
 pytest
 
