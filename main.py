@@ -1,4 +1,5 @@
 from backend_pool import BackendPool
+from core import MetricsCollector
 from aiohttp import web, ClientSession
 import argparse
 import asyncio
@@ -23,6 +24,15 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument(
+        "--metrics-port", type=int, default=9090, help="Port for metrics server"
+    )
+    parser.add_argument(
+        "--enable-metrics",
+        type=bool,
+        default=True,
+        help="Enable metrics collection",
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -33,15 +43,17 @@ def main():
     args, _ = parser.parse_known_args()
 
     logger = setup_logging(args.log_level, args.log_file)
-    asyncio.run(run_app(args.port, logger))
+    asyncio.run(run_app(args.port, args.metrics_port, args.enable_metrics, logger))
 
 
-async def run_app(port, logger):
-    backend_pool = BackendPool()
+async def run_app(port: int, metrics_port: int, enable_metrics: bool, logger):
+    metrics = MetricsCollector() if enable_metrics else None
+    backend_pool = BackendPool(metrics=metrics)
     await backend_pool.start_health_checks()
     await backend_pool.start_stats_cleanup()
     client_session = ClientSession()
     shutdown_event = asyncio.Event()
+    metrics_runner = None
 
     try:
 
@@ -63,6 +75,20 @@ async def run_app(port, logger):
                     await backend_pool.record_request(backend.url)
 
                     duration = (time.time() - start_time) * 1000
+
+                    if metrics:
+                        await metrics.increment_counter(
+                            "backend.requests.total",
+                            {
+                                "backend": backend.url,
+                                "method": request.method,
+                                "status": str(resp.status),
+                            },
+                        )
+                        await metrics.record_histogram(
+                            "backend.latency.ms", duration, {"backend": backend.url}
+                        )
+
                     logger.info(
                         f"{request.method} {request.path} -> {backend.url} ({resp.status}) - {duration:.2f}ms"
                     )
@@ -73,6 +99,20 @@ async def run_app(port, logger):
 
             except Exception as e:
                 logger.error(f"Proxy error for {backend.url}: {e}")
+
+                if metrics:
+                    await metrics.increment_counter(
+                        "backend.errors.total", {"backend": backend.url}
+                    )
+                    await metrics.increment_counter(
+                        "backend.requests.total",
+                        {
+                            "backend": backend.url,
+                            "method": request.method,
+                            "status": "error",
+                        },
+                    )
+
                 return web.Response(text=str(e), status=502)
 
             finally:
@@ -124,6 +164,28 @@ async def run_app(port, logger):
 
         logger.info(f"Load balancer running on http://127.0.0.1:{port}")
 
+        if metrics:
+            metrics_app = web.Application()
+
+            async def metrics_handler(request):
+                accept = request.headers.get("Accept", "")
+                if "application/json" in accept or "/json" in accept:
+                    return web.json_response(await metrics.get_metrics())
+                return web.Response(
+                    text=await metrics.export_prometheus(), content_type="text/plain"
+                )
+
+            metrics_app.router.add_get("/metrics", metrics_handler)
+            metrics_app.router.add_get("/metrics/json", metrics_handler)
+
+            metrics_runner = web.AppRunner(metrics_app)
+            await metrics_runner.setup()
+            metrics_site = web.TCPSite(metrics_runner, "127.0.0.1", metrics_port)
+            await metrics_site.start()
+            logger.info(
+                f"Metrics server running on http://127.0.0.1:{metrics_port}/metrics"
+            )
+
         await shutdown_event.wait()
 
     finally:
@@ -131,6 +193,8 @@ async def run_app(port, logger):
         await backend_pool.stop_health_checks()
         await backend_pool.stop_stats_cleanup()
         await client_session.close()
+        if metrics_runner:
+            await metrics_runner.cleanup()
 
 
 if __name__ == "__main__":

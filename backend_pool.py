@@ -8,13 +8,18 @@ from core import (
     WeightedRoundRobinScheduler,
     RoundRobinScheduler,
     LeastConnectionsScheduler,
+    MetricsCollector,
 )
 
 logger = logging.getLogger(__name__)
 
 
 class BackendPool:
-    def __init__(self, health_check_interval: float = 5.0) -> None:
+    def __init__(
+        self,
+        health_check_interval: float = 5.0,
+        metrics: MetricsCollector | None = None,
+    ) -> None:
         self.backends: dict[str, Backend] = {}
         self.scheduler = RoundRobinScheduler()
         self._scheduler_iter = None
@@ -31,6 +36,7 @@ class BackendPool:
             "6h": 21600,
             "24h": 86400,
         }
+        self.metrics = metrics or MetricsCollector()
 
     async def start_health_checks(self):
         if self._health_check_task is None:
@@ -56,16 +62,43 @@ class BackendPool:
 
         async with ClientSession() as session:
             for backend in backends_copy:
+                start_time = time.time()
                 try:
                     async with session.head(
                         backend.url, timeout=aiohttp.ClientTimeout(total=2)
                     ) as resp:
+                        latency = (time.time() - start_time) * 1000
                         backend.healthy = resp.status < 500
+                        await self.metrics.record_histogram(
+                            "backend.health_check.latency.ms",
+                            latency,
+                            {"backend": backend.url},
+                        )
+                        await self.metrics.increment_counter(
+                            "backend.health_check.total",
+                            {
+                                "backend": backend.url,
+                                "status": "healthy" if backend.healthy else "unhealthy",
+                            },
+                        )
                         logger.debug(
                             f"Health check: {backend.url} - {'healthy' if backend.healthy else 'unhealthy'} ({resp.status})"
                         )
                 except Exception as e:
+                    latency = (time.time() - start_time) * 1000
                     backend.healthy = False
+                    await self.metrics.record_histogram(
+                        "backend.health_check.latency.ms",
+                        latency,
+                        {"backend": backend.url},
+                    )
+                    await self.metrics.increment_counter(
+                        "backend.health_check.errors", {"backend": backend.url}
+                    )
+                    await self.metrics.increment_counter(
+                        "backend.health_check.total",
+                        {"backend": backend.url, "status": "error"},
+                    )
                     logger.warning(f"Health check failed: {backend.url} - {e}")
 
     def _parse_period(self, period: str) -> int | None:
@@ -182,11 +215,21 @@ class BackendPool:
                 self._rebuild_scheduler()
                 backend = next(self._scheduler_iter)
             backend.active_connections += 1
+            await self.metrics.set_gauge(
+                "backend.active_connections",
+                backend.active_connections,
+                {"backend": backend.url},
+            )
             return backend
 
     async def release(self, backend: Backend):
         async with self._lock:
             backend.active_connections -= 1
+        await self.metrics.set_gauge(
+            "backend.active_connections",
+            backend.active_connections,
+            {"backend": backend.url},
+        )
 
     async def show(self):
         async with self._lock:
