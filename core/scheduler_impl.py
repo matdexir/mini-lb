@@ -1,35 +1,52 @@
-from .scheduler import Scheduler, Backend
-from itertools import cycle
-import random
+import heapq
+from core.scheduler import Backend
 
 
-class RoundRobinScheduler(Scheduler):
-    def __init__(self) -> None:
-        self._cycle = None
+class RoundRobinScheduler:
+    def __init__(self, backends: list[Backend] | None = None):
+        self._backends = backends or []
 
-    def select(self, backends: dict[str, Backend]):
-        if not backends:
-            return None
-        if not self._cycle:
-            self._cycle = cycle(backends.values())
-        return next(self._cycle)
+    def set_backends(self, backends: list[Backend]):
+        self._backends = list(backends)
 
-
-class WeightedRoundRobinScheduler(Scheduler):
-    def select(self, backends: dict[str, Backend]):
-        if not backends:
-            return None
-
-        weighted = []
-
-        for backend in backends.values():
-            weighted.extend([backend] * backend.weight)
-
-        return random.choice(weighted)
+    def __iter__(self):
+        if not self._backends:
+            return
+        while True:
+            for backend in self._backends:
+                yield backend
 
 
-class LeastConnectionsScheduler(Scheduler):
-    def select(self, backends: dict[str, Backend]):
-        if not backends:
-            return None
-        return min(backends.values(), key=lambda b: b.active_connections)
+class WeightedRoundRobinScheduler:
+    def __init__(self, backends: list[Backend] | None = None):
+        self._backends = backends or []
+        self._weighted: list[Backend] = []
+
+    def set_backends(self, backends: list[Backend]):
+        self._backends = list(backends)
+        self._weighted = []
+        for backend in backends:
+            self._weighted.extend([backend] * backend.weight)
+
+    def __iter__(self):
+        if not self._weighted:
+            return
+        while True:
+            yield from self._weighted
+
+
+class LeastConnectionsScheduler:
+    def __init__(self, backends: list[Backend] | None = None):
+        self._backends = {b.url: b for b in (backends or [])}
+
+    def set_backends(self, backends: list[Backend]):
+        self._backends = {b.url: b for b in backends}
+
+    def __iter__(self):
+        if not self._backends:
+            return
+        while True:
+            heap = [(b.active_connections, url) for url, b in self._backends.items()]
+            heapq.heapify(heap)
+            _, url = heap[0]
+            yield self._backends[url]

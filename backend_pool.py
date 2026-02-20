@@ -4,7 +4,6 @@ import time
 import aiohttp
 from aiohttp import ClientSession
 from core import (
-    Scheduler,
     Backend,
     WeightedRoundRobinScheduler,
     RoundRobinScheduler,
@@ -17,7 +16,8 @@ logger = logging.getLogger(__name__)
 class BackendPool:
     def __init__(self, health_check_interval: float = 5.0) -> None:
         self.backends: dict[str, Backend] = {}
-        self.scheduler: Scheduler = RoundRobinScheduler()
+        self.scheduler = RoundRobinScheduler()
+        self._scheduler_iter = None
         self._lock = asyncio.Lock()
         self._health_check_interval = health_check_interval
         self._health_check_task: asyncio.Task | None = None
@@ -70,6 +70,11 @@ class BackendPool:
 
     def _parse_period(self, period: str) -> int | None:
         return self._period_map.get(period)
+
+    def _rebuild_scheduler(self):
+        healthy_backends = [b for b in self.backends.values() if b.healthy]
+        self.scheduler.set_backends(healthy_backends)
+        self._scheduler_iter = iter(self.scheduler)
 
     async def record_request(self, backend_url: str):
         async with self._lock:
@@ -145,10 +150,12 @@ class BackendPool:
     async def add(self, backend_url: str, weight: int = 1):
         async with self._lock:
             self.backends[backend_url] = Backend(backend_url, weight=weight)
+            self._rebuild_scheduler()
 
     async def remove(self, backend_url: str):
         async with self._lock:
             self.backends.pop(backend_url, None)
+            self._rebuild_scheduler()
 
     async def set_scheduler(self, algo: str):
         match algo:
@@ -160,15 +167,21 @@ class BackendPool:
                 self.scheduler = LeastConnectionsScheduler()
             case _:
                 raise ValueError(f"unkonw scheduling algo: {algo}")
+        self._rebuild_scheduler()
 
     async def select_backend(self):
         async with self._lock:
             healthy_backends = {k: v for k, v in self.backends.items() if v.healthy}
             if not healthy_backends:
                 return None
-            backend = self.scheduler.select(healthy_backends)
-            if backend:
-                backend.active_connections += 1
+            if self._scheduler_iter is None:
+                self._rebuild_scheduler()
+            try:
+                backend = next(self._scheduler_iter)
+            except StopIteration:
+                self._rebuild_scheduler()
+                backend = next(self._scheduler_iter)
+            backend.active_connections += 1
             return backend
 
     async def release(self, backend: Backend):

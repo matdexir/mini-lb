@@ -1,4 +1,4 @@
-from .scheduler import Scheduler, Backend
+from .scheduler import Backend
 from .scheduler_impl import (
     RoundRobinScheduler,
     WeightedRoundRobinScheduler,
