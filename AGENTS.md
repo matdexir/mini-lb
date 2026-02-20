@@ -27,6 +27,10 @@ python main.py --port 9000
 
 # Or using module syntax
 python -m main --port 8080
+
+# With custom log level (DEBUG, INFO, WARNING, ERROR) and optional log file
+python main.py --port 8080 --log-level DEBUG
+python main.py --port 8080 --log-level INFO --log-file /var/log/lb.log
 ```
 
 ### Testing
@@ -76,13 +80,14 @@ python -c "from main import *"
 ```python
 # Correct
 import asyncio
+import logging
 import aiohttp
 from aiohttp import ClientSession, web
 from core import Scheduler, Backend
 
 # Wrong
 from core import *
-import asyncio, aiohttp
+import asyncio, aiohttp, logging
 ```
 
 ### Type Hints
@@ -157,15 +162,19 @@ async def stop_health_checks(self):
 ### Error Handling
 - Use specific exception types when possible
 - Return appropriate HTTP status codes in web handlers
-- Log errors appropriately (print to stderr for now)
+- Use the logging module for error logging:
 
 ```python
+import logging
+logger = logging.getLogger(__name__)
+
 # Web handler error handling
 try:
     async with client_session.request(...) as resp:
         body = await resp.read()
         return web.Response(body=body, status=resp.status, headers=resp.headers)
 except Exception as e:
+    logger.error(f"Proxy error for {backend.url}: {e}")
     return web.Response(text=str(e), status=502)
 ```
 
@@ -200,7 +209,23 @@ def test_single_backend(self):
     assert result.url == "url"
 ```
 
-### Formatting
+### Logging
+The project uses Python's standard `logging` module:
+
+```python
+import logging
+
+logger = logging.getLogger(__name__)
+
+# Log levels: DEBUG, INFO, WARNING, ERROR
+logger.info(f"Load balancer running on http://127.0.0.1:{port}")
+logger.warning(f"Health check failed: {backend.url}")
+logger.error(f"Proxy error for {backend.url}: {e}")
+```
+
+CLI options for logging:
+- `--log-level`: DEBUG, INFO, WARNING, ERROR (default: INFO)
+- `--log-file`: Optional file path for logging (logs to stderr by default)
 - 4-space indentation (no tabs)
 - Maximum line length: 88 characters (ruff default)
 - Use blank lines sparingly to separate logical sections
@@ -225,7 +250,9 @@ lb/
 │   ├── test_lb.sh       # Integration test script
 │   └── fake_server.py   # Helper for testing
 ├── pyproject.toml       # Project configuration
-└── README.md            # User documentation
+├── README.md            # User documentation
+├── LICENSE              # MIT License
+└── AGENTS.md           # Developer guidelines for agents
 ```
 
 ### Control Endpoints
@@ -234,6 +261,7 @@ The load balancer exposes these control endpoints:
 - `POST /_control/remove` - Remove backend (`{"url": "..."}`)
 - `POST /_control/scheduler` - Set algorithm (`{"algorithm": "round_robin|weighted|least_conn"}`)
 - `GET /_control/list` - List backends with health status
+- `GET /_control/stats` - Get request distribution stats (`?periods=5m,30m,1h,6h,24h,all`)
 
 ## Common Tasks
 
