@@ -129,17 +129,29 @@ class Backend:
     healthy: bool = True
 ```
 
-### Abstract Base Classes
-Use ABCs for interfaces:
+### Iterator-Based Schedulers
+Schedulers implement the iterator protocol - they are infinite iterators that yield backends:
 
 ```python
-from abc import ABC, abstractmethod
+class RoundRobinScheduler:
+    def __init__(self, backends: list[Backend] | None = None):
+        self._backends = backends or []
 
-class Scheduler(ABC):
-    @abstractmethod
-    def select(self, backends: dict[str, Backend]) -> Backend | None:
-        pass
+    def set_backends(self, backends: list[Backend]):
+        self._backends = list(backends)
+
+    def __iter__(self):
+        if not self._backends:
+            return
+        while True:
+            for backend in self._backends:
+                yield backend
 ```
+
+- Each scheduler is an infinite iterator
+- Use `set_backends()` to update the backend list
+- BackendPool creates/resets the iterator when backends change
+- Handle empty backends by returning early (not infinite loop)
 
 ### Async Patterns
 - Always use `async def` for async functions
