@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import time
 import aiohttp
 from aiohttp import ClientSession
@@ -9,6 +10,8 @@ from core import (
     RoundRobinScheduler,
     LeastConnectionsScheduler,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class BackendPool:
@@ -58,8 +61,12 @@ class BackendPool:
                         backend.url, timeout=aiohttp.ClientTimeout(total=2)
                     ) as resp:
                         backend.healthy = resp.status < 500
-                except Exception:
+                        logger.debug(
+                            f"Health check: {backend.url} - {'healthy' if backend.healthy else 'unhealthy'} ({resp.status})"
+                        )
+                except Exception as e:
                     backend.healthy = False
+                    logger.warning(f"Health check failed: {backend.url} - {e}")
 
     def _parse_period(self, period: str) -> int | None:
         return self._period_map.get(period)

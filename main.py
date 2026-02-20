@@ -2,16 +2,41 @@ from backend_pool import BackendPool
 from aiohttp import web, ClientSession
 import argparse
 import asyncio
+import logging
+import time
+
+
+def setup_logging(log_level: str, log_file: str | None):
+    level = getattr(logging, log_level.upper())
+    handlers = [logging.StreamHandler()]
+    if log_file:
+        handlers.append(logging.FileHandler(log_file))
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s %(message)s",
+        handlers=handlers,
+    )
+    return logging.getLogger(__name__)
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+    )
+    parser.add_argument(
+        "--log-file", default=None, help="Optional file path for logging"
+    )
     args, _ = parser.parse_known_args()
-    asyncio.run(run_app(args.port))
+
+    logger = setup_logging(args.log_level, args.log_file)
+    asyncio.run(run_app(args.port, logger))
 
 
-async def run_app(port):
+async def run_app(port, logger):
     backend_pool = BackendPool()
     await backend_pool.start_health_checks()
     await backend_pool.start_stats_cleanup()
@@ -20,6 +45,7 @@ async def run_app(port):
     try:
 
         async def proxy_handler(request):
+            start_time = time.time()
             backend = await backend_pool.select_backend()
 
             if not backend:
@@ -35,11 +61,17 @@ async def run_app(port):
                     body = await resp.read()
                     await backend_pool.record_request(backend.url)
 
+                    duration = (time.time() - start_time) * 1000
+                    logger.info(
+                        f"{request.method} {request.path} -> {backend.url} ({resp.status}) - {duration:.2f}ms"
+                    )
+
                     return web.Response(
                         body=body, status=resp.status, headers=resp.headers
                     )
 
             except Exception as e:
+                logger.error(f"Proxy error for {backend.url}: {e}")
                 return web.Response(text=str(e), status=502)
 
             finally:
@@ -47,17 +79,23 @@ async def run_app(port):
 
         async def add_backend(request):
             data = await request.json()
-            await backend_pool.add(data["url"], data.get("weight", 1))
+            url = data["url"]
+            await backend_pool.add(url, data.get("weight", 1))
+            logger.info(f"Backend added: {url}")
             return web.json_response({"status": "added"})
 
         async def remove_backend(request):
             data = await request.json()
-            await backend_pool.remove(data["url"])
+            url = data["url"]
+            await backend_pool.remove(url)
+            logger.info(f"Backend removed: {url}")
             return web.json_response({"status": "removed"})
 
         async def set_algorithm(request):
             data = await request.json()
-            await backend_pool.set_scheduler(data["algorithm"])
+            algo = data["algorithm"]
+            await backend_pool.set_scheduler(algo)
+            logger.info(f"Scheduler algorithm changed to: {algo}")
             return web.json_response({"status": "scheduler_updated"})
 
         async def list_backends(request):
@@ -83,7 +121,7 @@ async def run_app(port):
         site = web.TCPSite(runner, "127.0.0.1", port)
         await site.start()
 
-        print(f"Load balancer running on http://127.0.0.1:{port}")
+        logger.info(f"Load balancer running on http://127.0.0.1:{port}")
 
         while True:
             await asyncio.sleep(3600)

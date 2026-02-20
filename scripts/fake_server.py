@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 from http.server import HTTPServer, BaseHTTPRequestHandler
+import logging
 import sys
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -17,5 +23,5 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     port = int(sys.argv[1])
     server = HTTPServer(("127.0.0.1", port), Handler)
-    print(f"Fake backend running on port {port}")
+    logging.info(f"Fake backend running on port {port}")
     server.serve_forever()
