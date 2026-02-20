@@ -41,6 +41,7 @@ async def run_app(port, logger):
     await backend_pool.start_health_checks()
     await backend_pool.start_stats_cleanup()
     client_session = ClientSession()
+    shutdown_event = asyncio.Event()
 
     try:
 
@@ -123,10 +124,10 @@ async def run_app(port, logger):
 
         logger.info(f"Load balancer running on http://127.0.0.1:{port}")
 
-        while True:
-            await asyncio.sleep(3600)
+        await shutdown_event.wait()
 
     finally:
+        shutdown_event.set()
         await backend_pool.stop_health_checks()
         await backend_pool.stop_stats_cleanup()
         await client_session.close()
