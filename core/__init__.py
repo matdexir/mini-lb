@@ -4,4 +4,6 @@ from .scheduler_impl import (
     RoundRobinScheduler,
     WeightedRoundRobinScheduler,
     LeastConnectionsScheduler,
+    WeightedLeastConnectionsScheduler,
+    LeastRequestsScheduler,
 )

@@ -59,7 +59,14 @@ async def run_app(port: int, metrics_port: int, enable_metrics: bool, logger):
 
         async def proxy_handler(request):
             start_time = time.time()
-            backend = await backend_pool.select_backend()
+
+            if backend_pool._source_hash:
+                client_ip = request.remote or request.headers.get(
+                    "X-Forwarded-For", "unknown"
+                )
+                backend = await backend_pool.select_backend_by_ip(client_ip)
+            else:
+                backend = await backend_pool.select_backend()
 
             if not backend:
                 return web.Response(text="No backends", status=503)

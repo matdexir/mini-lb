@@ -50,3 +50,43 @@ class LeastConnectionsScheduler:
             heapq.heapify(heap)
             _, url = heap[0]
             yield self._backends[url]
+
+
+class WeightedLeastConnectionsScheduler:
+    def __init__(self, backends: list[Backend] | None = None):
+        self._backends = {b.url: b for b in (backends or [])}
+
+    def set_backends(self, backends: list[Backend]):
+        self._backends = {b.url: b for b in backends}
+
+    def __iter__(self):
+        if not self._backends:
+            return
+        while True:
+            heap = []
+            for url, b in self._backends.items():
+                if b.weight > 0:
+                    ratio = b.active_connections / b.weight
+                    heap.append((ratio, url))
+            if not heap:
+                return
+            heapq.heapify(heap)
+            _, url = heap[0]
+            yield self._backends[url]
+
+
+class LeastRequestsScheduler:
+    def __init__(self, backends: list[Backend] | None = None):
+        self._backends = {b.url: b for b in (backends or [])}
+
+    def set_backends(self, backends: list[Backend]):
+        self._backends = {b.url: b for b in backends}
+
+    def __iter__(self):
+        if not self._backends:
+            return
+        while True:
+            heap = [(b.total_requests, url) for url, b in self._backends.items()]
+            heapq.heapify(heap)
+            _, url = heap[0]
+            yield self._backends[url]

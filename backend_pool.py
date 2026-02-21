@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import logging
 import time
 import aiohttp
@@ -8,6 +9,8 @@ from core import (
     WeightedRoundRobinScheduler,
     RoundRobinScheduler,
     LeastConnectionsScheduler,
+    WeightedLeastConnectionsScheduler,
+    LeastRequestsScheduler,
     MetricsCollector,
 )
 
@@ -29,6 +32,7 @@ class BackendPool:
         self._request_times: dict[str, list[float]] = {}
         self._total_requests: dict[str, int] = {}
         self._cleanup_task: asyncio.Task | None = None
+        self._source_hash = False
         self._period_map = {
             "5m": 300,
             "30m": 1800,
@@ -191,6 +195,7 @@ class BackendPool:
             self._rebuild_scheduler()
 
     async def set_scheduler(self, algo: str):
+        self._source_hash = False
         match algo:
             case "round_robin":
                 self.scheduler = RoundRobinScheduler()
@@ -198,8 +203,14 @@ class BackendPool:
                 self.scheduler = WeightedRoundRobinScheduler()
             case "least_conn":
                 self.scheduler = LeastConnectionsScheduler()
+            case "weighted_least_conn":
+                self.scheduler = WeightedLeastConnectionsScheduler()
+            case "least_requests":
+                self.scheduler = LeastRequestsScheduler()
+            case "source_hash":
+                self._source_hash = True
             case _:
-                raise ValueError(f"unkonw scheduling algo: {algo}")
+                raise ValueError(f"unknown scheduling algo: {algo}")
         self._rebuild_scheduler()
 
     async def select_backend(self):
@@ -225,11 +236,28 @@ class BackendPool:
     async def release(self, backend: Backend):
         async with self._lock:
             backend.active_connections -= 1
+            backend.total_requests += 1
         await self.metrics.set_gauge(
             "backend.active_connections",
             backend.active_connections,
             {"backend": backend.url},
         )
+
+    async def select_backend_by_ip(self, client_ip: str) -> Backend | None:
+        async with self._lock:
+            healthy_backends = [b for b in self.backends.values() if b.healthy]
+            if not healthy_backends:
+                return None
+            sorted_backends = sorted(healthy_backends, key=lambda b: b.url)
+            hash_val = int(hashlib.md5(client_ip.encode()).hexdigest(), 16)
+            backend = sorted_backends[hash_val % len(sorted_backends)]
+            backend.active_connections += 1
+            await self.metrics.set_gauge(
+                "backend.active_connections",
+                backend.active_connections,
+                {"backend": backend.url},
+            )
+            return backend
 
     async def show(self):
         async with self._lock:
